@@ -36,7 +36,7 @@ __C.CNTK = edict()
 __C.CNTK.FORCE_DETERMINISTIC = True
 __C.CNTK.FAST_MODE = False
 __C.CNTK.MAKE_MODE = False
-__C.CNTK.TRAIN_E2E = True
+__C.CNTK.TRAIN_E2E = False
 __C.CNTK.DEBUG_OUTPUT = True
 __C.CNTK.USE_MEAN_GRADIENT = True
 __C.CNTK.TRAIN_CONV_LAYERS = True
@@ -59,11 +59,11 @@ __C.CNTK.E2E_MAX_EPOCHS = 20
 __C.CNTK.E2E_LR_PER_SAMPLE = [0.001] * 10 + [0.0001] * 10 + [0.00001]
 
 # caffe rpn training: lr = [0.001] * 12 + [0.0001] * 4, momentum = 0.9, weight decay = 0.0005 (cf. stage1_rpn_solver60k80k.pt)
-__C.CNTK.RPN_EPOCHS = 16 # 12 + 16 ?
+__C.CNTK.RPN_EPOCHS = 28 # 12 + 16 ?
 __C.CNTK.RPN_LR_PER_SAMPLE = [0.001] * 12 + [0.0001] * 4
 
 # caffe frcn training: lr = [0.001] * 6 + [0.0001] * 2, momentum = 0.9, weight decay = 0.0005 (cf. stage1_fast_rcnn_solver30k40k.pt)
-__C.CNTK.FRCN_EPOCHS = 8 # 6 + 8 ?
+__C.CNTK.FRCN_EPOCHS = 28 # 8 # 6 + 8 ?
 __C.CNTK.FRCN_LR_PER_SAMPLE = [0.001] * 6 + [0.0001] * 2
 # Current setting for CNTK:
 #__C.CNTK.FRCN_EPOCHS = 20
@@ -130,8 +130,12 @@ if __C.CNTK.BASE_MODEL == "AlexNet":
     __C.CNTK.RPN_NUM_CHANNELS = 256
     __C.CNTK.ROI_DIM = 6
     # 1.0: 84.17|88.85|79.79|86.25|84.9 --- det: 89.64|89.64 --- mean grad: 89.64 --- conv layers: 75.10
+    # after merging to latest master:
+    # (1.0, det, conv): 0.6983, (1.0, det): 89.55
     __C.CNTK.E2E_LR_FACTOR = 1.0
     # 1.0: 85.83|85.27|94.10|94.06 --- det: 89.06
+    # after merging to latest master:
+    # (1.0, det, conv): 91.67, (1.0, det): 82.96, (1.0, det, higher_20): 83.54 +conv: 94.8, caffe 16|20: 93.54, 28|14: 94.01, 28|28:
     __C.CNTK.RPN_LR_FACTOR = 1.0
     __C.CNTK.FRCN_LR_FACTOR = 1.0
 
@@ -145,6 +149,8 @@ if __C.CNTK.BASE_MODEL == "VGG16":
     __C.CNTK.RPN_NUM_CHANNELS = 512
     __C.CNTK.ROI_DIM = 7
     # det: 90.48
+    # after merging to latest master:
+    # (1.0, det, conv): 66.96, (1.0, det): 77.8, (2.0, det): 75.53
     __C.CNTK.E2E_LR_FACTOR = 1.0
     # Cuda OOM
     __C.CNTK.RPN_LR_FACTOR = 1.0

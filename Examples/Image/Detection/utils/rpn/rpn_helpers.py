@@ -20,7 +20,6 @@ try:
     from config import cfg
 except ImportError:
     from utils.default_config import cfg
-from cntk_debug_single import DebugLayerSingle
 
 def create_rpn(conv_out, scaled_gt_boxes, im_info, add_loss_functions=True,
                proposal_layer_param_string=None, conv_bias_init=0.0):
@@ -102,7 +101,7 @@ def create_rpn(conv_out, scaled_gt_boxes, im_info, add_loss_functions=True,
         p_rpn_bbox_targets = cntk.placeholder()
         p_rpn_bbox_inside_weights = cntk.placeholder()
         rpn_loss_bbox = SmoothL1Loss(cfg["CNTK"].SIGMA_RPN_L1, p_rpn_bbox_pred, p_rpn_bbox_targets, p_rpn_bbox_inside_weights, 1.0)
-        # The terms that are accounted for in the bbox loss are those that bbox_inside_weight == 1
+        # The terms that are accounted for in the bbox loss are those with bbox_inside_weight == 1
         # Alternatively: bbox_num_terms = reduce_sum(cntk.greater_equal(rpn_bbox_inside_weights, 0.0))
         bbox_num_terms = reduce_sum(p_rpn_bbox_inside_weights) # / 4.0 --> bbiw is one for each coordinate --> moving 4.0 to next line
         bbox_normalization_factor = 4.0 / bbox_num_terms
