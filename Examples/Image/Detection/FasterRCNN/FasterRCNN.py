@@ -47,8 +47,9 @@ from config import cfg
 from od_mb_source import ObjectDetectionMinibatchSource
 from cntk_helpers import regress_rois
 # rois = user_function(DebugLayerSingle(rois, debug_name="rois_debug"))
-#from cntk import user_function
+from cntk import user_function
 #from cntk_debug_single import DebugLayerSingle
+from utils.rpn.proposal_layer import ProposalLayer
 
 ###############################################################
 ###############################################################
@@ -216,6 +217,8 @@ def clone_model(base_model, from_node_names, to_node_names, clone_method):
 def clone_conv_layers(base_model):
     if not globalvars['train_conv']:
         conv_layers = clone_model(base_model, [feature_node_name], [last_conv_node_name], CloneMethod.freeze)
+    elif feature_node_name == start_train_conv_node_name:
+        conv_layers = clone_model(base_model, [feature_node_name], [last_conv_node_name], CloneMethod.clone)
     else:
         fixed_conv_layers = clone_model(base_model, [feature_node_name], [start_train_conv_node_name],
                                         CloneMethod.freeze)
@@ -304,12 +307,24 @@ def create_detection_losses(cls_score, label_targets, rois, bbox_pred, bbox_targ
 def create_eval_model(model, image_input, dims_input, rpn_model=None):
     print("creating eval model")
     conv_layers = clone_model(model, [feature_node_name], [last_conv_node_name], CloneMethod.freeze)
-    model_with_rpn = model if rpn_model is None else rpn_model
-    rpn = clone_model(model_with_rpn, [last_conv_node_name, "dims_input"], ["rpn_rois"], CloneMethod.freeze)
-    roi_fc_layers = clone_model(model, [last_conv_node_name, "rpn_target_rois"], ["cls_score", "bbox_regr"], CloneMethod.freeze)
-
     conv_out = conv_layers(image_input)
-    rpn_rois = rpn(conv_out, dims_input)
+
+    model_with_rpn = model if rpn_model is None else rpn_model
+    if cfg["CNTK"].USE_FREE_DIMENSION:
+        rpn = clone_model(model_with_rpn, [last_conv_node_name, "dims_input"], ["rpn_rois"], CloneMethod.freeze)
+        rpn_rois = rpn(conv_out, dims_input)
+    else:
+        rpn = clone_model(model_with_rpn, [last_conv_node_name], ["rpn_bbox_pred", "rpn_cls_prob_reshape"], CloneMethod.freeze)
+        rpn_out = rpn(conv_out)
+        rpn_bbox_pred = rpn_out.outputs[0]
+        rpn_cls_prob_reshape = rpn_out.outputs[1]
+        # use fixed output size here instead of FreeDimension by passing outDim
+        rpn_rois_raw = user_function(
+            ProposalLayer(rpn_cls_prob_reshape, rpn_bbox_pred, dims_input, param_str=cfg["CNTK"].PROPOSAL_LAYER_PARAMS,
+                          outDim=cfg["TEST"].RPN_POST_NMS_TOP_N))
+        rpn_rois = alias(rpn_rois_raw, name='rpn_rois')
+
+    roi_fc_layers = clone_model(model, [last_conv_node_name, "rpn_target_rois"], ["cls_score", "bbox_regr"], CloneMethod.freeze)
     pred_net = roi_fc_layers(conv_out, rpn_rois)
     cls_score = pred_net.outputs[0]
     bbox_regr = pred_net.outputs[1]

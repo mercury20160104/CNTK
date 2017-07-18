@@ -41,10 +41,16 @@ class ProposalTargetLayer(UserFunction):
     def infer_outputs(self):
         # sampled rois (0, x1, y1, x2, y2)
         # for CNTK the proposal shape is [4 x roisPerImage], and mirrored in Python
-        rois_shape = (FreeDimension, 4)
-        labels_shape = (FreeDimension, self._num_classes)
-        bbox_targets_shape = (FreeDimension, self._num_classes * 4)
-        bbox_inside_weights_shape = (FreeDimension, self._num_classes * 4)
+        if cfg["CNTK"].USE_FREE_DIMENSION:
+            rois_shape = (FreeDimension, 4)
+            labels_shape = (FreeDimension, self._num_classes)
+            bbox_targets_shape = (FreeDimension, self._num_classes * 4)
+            bbox_inside_weights_shape = (FreeDimension, self._num_classes * 4)
+        else:
+            rois_shape = (cfg.TRAIN.BATCH_SIZE, 4)
+            labels_shape = (cfg.TRAIN.BATCH_SIZE, self._num_classes)
+            bbox_targets_shape = (cfg.TRAIN.BATCH_SIZE, self._num_classes * 4)
+            bbox_inside_weights_shape = (cfg.TRAIN.BATCH_SIZE, self._num_classes * 4)
 
         return [output_variable(rois_shape, self.inputs[0].dtype, self.inputs[0].dynamic_axes,
                                 name="rpn_target_rois_raw", needs_gradient=False),
