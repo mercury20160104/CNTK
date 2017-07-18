@@ -2,7 +2,7 @@
 // Copyright (c) Microsoft. All rights reserved.
 // Licensed under the MIT license. See LICENSE.md file in the project root for full license information.
 //
-// Swig specific utility classes, the file should be used only from cntk_py.i
+// Swig deserializer utilities, the file should be used only from cntk_py.i because some Python headers.
 //
 
 #pragma once
@@ -11,77 +11,76 @@
 
 namespace CNTK
 {
-    typedef std::shared_ptr<PyObject> SharedPyObjectPtr;
+    // A scope guard class that makes sure that the current thread
+    // has properly acquired GIL.
+    class GilStateGuard final
+    {
+        PyGILState_STATE m_state;
 
+    public:
+        GilStateGuard() : m_state(PyGILState_Ensure())
+        {}
+
+        ~GilStateGuard()
+        {
+            PyGILState_Release(m_state);
+        }
+
+    private:
+        GilStateGuard(const GilStateGuard&) = delete; GilStateGuard& operator=(const GilStateGuard&) = delete;
+        GilStateGuard& operator=(GilStateGuard&&) = delete; GilStateGuard(GilStateGuard&& other) = delete;
+    };
+
+    typedef std::shared_ptr<PyObject> PyObjectPtr;
+
+    // Dense sequence that references some memory from a Python object.
+    // Makes sure the Python object is not released while the sequence exists.
+    struct DenseDataFromPy final : public DenseSequenceData
+    {
+        DenseDataFromPy(void* ptr, const PyObjectPtr& object)
+            : m_data(ptr), m_object(object)
+        {
+        }
+
+        virtual const void* GetDataBuffer() { return m_data; }
+        virtual const NDShape& GetSampleShape() { RuntimeError("Sample shape should be specified on the stream."); }
+
+    private:
+        void* m_data;
+        PyObjectPtr m_object;
+
+        DenseDataFromPy(const DenseDataFromPy&) = delete; DenseDataFromPy& operator=(const DenseDataFromPy&) = delete;
+        DenseDataFromPy& operator=(DenseDataFromPy&&) = delete; DenseDataFromPy(DenseDataFromPy&& other) = delete;
+    };
+
+    // Sparse sequence that references some memory from a Python object.
+    // Makes sure the Python object is not released while the sequence exists.
+    struct SparseDataFromPy final : public SparseSequenceData
+    {
+        SparseDataFromPy(void* data, SparseIndexType* indices, SparseIndexType nonZeroCount, const PyObjectPtr& object)
+            : m_data(data), m_object(object)
+        {
+            m_indices = indices;
+            m_totalNnzCount = nonZeroCount;
+        }
+
+        virtual const void* GetDataBuffer() { return m_data; }
+        virtual const NDShape& GetSampleShape() { RuntimeError("Sample shape should be specified on the stream."); }
+
+    private:
+        void* m_data;
+        PyObjectPtr m_object;
+
+        SparseDataFromPy(const SparseDataFromPy&) = delete; SparseDataFromPy& operator=(const SparseDataFromPy&) = delete;
+        SparseDataFromPy& operator=(SparseDataFromPy&&) = delete; SparseDataFromPy(SparseDataFromPy&& other) = delete;
+    };
+
+    // A wrapper around a Python chunk
+    // A Python chunk is a dictionary of the following form:
+    // { <stream name> -> [numpy array | csr_matrix | list of numpy arrays | list of csr_matrix] }
     class SwigChunk final : public Chunk
     {
         std::vector<StreamInformation> m_streamInfos;
-
-        struct SwigDensePtrData final : public DenseSequenceData
-        {
-            SwigDensePtrData(void* ptr, const SharedPyObjectPtr& chunk) : m_data(ptr), m_chunk(chunk)
-            {
-                m_data = ptr;
-            }
-            virtual const void* GetDataBuffer() { return m_data; }
-            virtual const NDShape& GetSampleShape() { RuntimeError("Sample shape should be specified on the stream.");}
-
-        private:
-            void* m_data;
-            SharedPyObjectPtr m_chunk;
-
-            SwigDensePtrData(const SwigDensePtrData&) = delete; SwigDensePtrData& operator=(const SwigDensePtrData&) = delete;
-            SwigDensePtrData& operator=(SwigDensePtrData&&) = delete; SwigDensePtrData(SwigDensePtrData&& other) = delete;
-        };
-
-        struct SwigSparsePtrData final : public SparseSequenceData
-        {
-            void* m_data;
-            SharedPyObjectPtr m_chunk;
-
-            SwigSparsePtrData(void* data, SparseIndexType* indices, SparseIndexType v, const SharedPyObjectPtr& chunk)
-                : m_data(data), m_chunk(chunk)
-            {
-                m_indices = indices;
-                m_nnzCounts.resize(1, v);
-                m_totalNnzCount = v;
-            }
-
-            virtual const void* GetDataBuffer() { return m_data; }
-            virtual const NDShape& GetSampleShape() { RuntimeError("Sample shape should be specified on the stream."); }
-
-        };
-
-        struct SwigDenseData final : public DenseSequenceData
-        {
-            SwigDenseData(PyArrayObject* object) : m_object(object)
-            {
-                Py_INCREF(m_object);
-            }
-
-            ~SwigDenseData()
-            {
-                GilStateGuard guard;
-                Py_DECREF(m_object);
-            };
-
-            virtual const void* GetDataBuffer()
-            {
-                GilStateGuard guard;
-                return PyArray_DATA(m_object);
-            }
-
-            virtual const NDShape& GetSampleShape()
-            {
-                RuntimeError("Sample shape should be specified on the stream.");
-            }
-
-        private:
-            PyArrayObject* m_object;
-
-            SwigDenseData(const SwigDenseData&) = delete; SwigDenseData& operator=(const SwigDenseData&) = delete;
-            SwigDenseData& operator=(SwigDenseData&&) = delete; SwigDenseData(SwigDenseData&& other) = delete;
-        };
 
         struct SwigSparseData final : public SparseSequenceData
         {
@@ -149,100 +148,146 @@ namespace CNTK
             PyArrayObject* m_pyIndices;
         };
 
-        SequenceDataPtr FromNumPy(PyObject* object, const StreamInformation& info)
+        // A helper function that from a Python array creates a dense sequence data.
+        SequenceDataPtr FromNumPy(PyArrayObject* array, const StreamInformation& info)
         {
-            PyArrayObject* array = (PyArrayObject*)object;
             int rank = PyArray_NDIM(array);
             npy_intp* np_shape = PyArray_SHAPE(array);
 
+            // In case rank is the same as in sample layout
+            // the sequence length is 1, othewise we take it from the first dimension.
             uint32_t numSamples = info.m_sampleLayout.Rank() == rank ? 1 : static_cast<uint32_t>(np_shape[0]);
             auto type = PyArray_TYPE(array);
             if (type != NPY_FLOAT32)
-                RuntimeError("Only float numbers are currently supported.");
+                RuntimeError("Only array of float is currently supported.");
 
-            SequenceDataPtr result = std::make_shared<SwigDenseData>(array);
+            Py_XINCREF(array);
+            auto obj = PyObjectPtr((PyObject*)array, [](PyObject* p) { GilStateGuard guard; Py_XDECREF(p); });
+
+            SequenceDataPtr result = std::make_shared<DenseDataFromPy>(PyArray_DATA(array), obj);
             result->m_numberOfSamples = numSamples;
             return result;
         }
 
         SequenceDataPtr FromCSR(PyObject* object, const StreamInformation& info)
         {
-            auto data = (PyArrayObject*)PyObject_GetAttrString(object, "data");
+            auto data = (PyArrayObject*)GetProperty(object, "data");
+
             auto type = PyArray_TYPE(data);
             if (type != NPY_FLOAT32)
-                RuntimeError("Only float numbers are currently supported.");
+                RuntimeError("Only csr_matrix of float is currently supported.");
 
-            auto indptr = (PyArrayObject*)PyObject_GetAttrString(object, "indptr");
-            auto indices = (PyArrayObject*)PyObject_GetAttrString(object, "indices");
+            auto indptr = (PyArrayObject*)GetProperty(object, "indptr");
+            auto indices = (PyArrayObject*)GetProperty(object, "indices");
 
-            auto shape = PyObject_GetAttrString(object, "shape");
+            auto shape = GetProperty(object, "shape");
             auto numElements = PyTuple_GET_ITEM(shape, 0);
 
-            SequenceDataPtr result = std::make_shared<SwigSparseData>(object, data, indices, indptr);
-            result->m_numberOfSamples = static_cast<uint32_t>(PyLong_AsSize_t(numElements));
-            return result;
-        }
-
-        std::shared_ptr<PyObject> m_pyChunk;
-        std::vector<size_t> m_indices;
-        std::vector<PyObject*> m_pyData;
-
-        std::vector<SequenceDataPtr> m_data;
-
-        size_t m_chunkId;
-    public:
-        SwigChunk(size_t chunkId, const std::vector<StreamInformation>& streamInfos, PyObject* chunk)
-            : m_streamInfos(streamInfos), m_chunkId(chunkId)
-        {
-            Py_XINCREF(chunk);
-            m_pyChunk = std::shared_ptr<PyObject>(chunk, [](PyObject* p)
+            Py_INCREF(object);
+            auto obj = std::shared_ptr<PyObject>(object, [](PyObject* p)
             {
-                // Only the last guy will aquire the lock and release the chunk data.
                 GilStateGuard guard;
                 Py_XDECREF(p);
             });
 
-            // Chunks are dictionaries "name" -> numpy or list of sequences for this stream.
-            if (PyDict_Check(m_pyChunk.get()))
+            auto result = std::make_shared<SparseDataFromPy>(
+                PyArray_DATA(data),
+                (SparseIndexType*)PyArray_DATA(indices),
+                static_cast<SparseIndexType>(PyArray_SIZE(data)),
+                obj);
+
+            auto nnzCountsSize = PyArray_SIZE(indptr);
+            result->m_nnzCounts.resize(nnzCountsSize);
+            type = PyArray_TYPE(indptr);
+
+            size_t elementSize = 0;
+            switch (type)
             {
-                PyObject *py_key, *py_value;
-                Py_ssize_t pos = 0;
-                m_pyData.resize(m_streamInfos.size(), nullptr);
-                while (PyDict_Next(m_pyChunk.get(), &pos, &py_key, &py_value))
-                {
-                    if (!PyUnicode_Check(py_key))
-                        RuntimeError("Dictionary should contain stream names");
-
-                    size_t len = PyUnicode_GET_SIZE(py_key);
-                    std::wstring name(PyUnicode_AS_UNICODE(py_key), len);
-
-                    auto it = std::find_if(m_streamInfos.begin(), m_streamInfos.end(),
-                        [name](const StreamInformation& s) { return s.m_name == name; });
-                    if (it == m_streamInfos.end())
-                        RuntimeError("Stream with name '%ls' does not exist", name.c_str());
-
-                    m_pyData[it - m_streamInfos.begin()] = py_value;
-                }
-
-                size_t size = GetSize(m_pyData.front());
-                for (size_t i = 1; i < m_streamInfos.size(); i++)
-                {
-                    auto currentSize = GetSize(m_pyData[i]);
-                    if (size != currentSize)
-                        RuntimeError("Provide an equal number of sequences across all streams in chunk, currently "
-                            "'%ls'- %d sequences, '%ls'- %d sequences", m_streamInfos.front().m_name.c_str(), (int)size,
-                            m_streamInfos[i].m_name.c_str(), (int)currentSize);
-                }
-
-                m_data.resize(size * m_streamInfos.size());
-                for (size_t i = 0; i < m_streamInfos.size(); i++)
-                    FillDataFrom(i, m_pyData[i], size);
+            case NPY_LONG:
+                elementSize = NPY_SIZEOF_LONG;
+                break;
+            case NPY_INT:
+                elementSize = NPY_SIZEOF_INT;
+                break;
+            default:
+                RuntimeError("Unsupported index type '%d'", type);
             }
-            else
-                RuntimeError("The chunk should either be a dictionary stream name -> list of sequences. ");
+
+            if (elementSize != sizeof(SparseIndexType))
+                RuntimeError("Number of bits for index is unsupported for type '%d'", type);
+
+            memcpy(&result->m_nnzCounts[0], PyArray_DATA(indptr), nnzCountsSize * elementSize);
+            for (size_t i = 0; i < result->m_nnzCounts.size() - 1; ++i)
+                result->m_nnzCounts[i] = result->m_nnzCounts[i + 1] - result->m_nnzCounts[i];
+
+            result->m_nnzCounts.resize(result->m_nnzCounts.size() - 1);
+            result->m_numberOfSamples = static_cast<uint32_t>(PyLong_AsSize_t(numElements));
+            return result;
         }
 
-        size_t GetSize(PyObject* o)
+    public:
+        SwigChunk(size_t chunkId, const std::vector<StreamInformation>& streamInfos, PyObject* chunk)
+            : m_streamInfos(streamInfos), m_chunkId(chunkId)
+        {
+            // Increment so that is is not released by Python.
+            Py_XINCREF(chunk);
+            m_pyChunk = std::shared_ptr<PyObject>(chunk, [](PyObject* p)
+            {
+                // During deletion, we have to acquire GIL, this will happen on a prefetch thread.
+                GilStateGuard guard;
+                Py_XDECREF(p);
+            });
+
+            // Chunks are dictionaries "stream name" -> <numpy|csr_matrix|list of sequences>.
+            if (!PyDict_Check(m_pyChunk.get()))
+                RuntimeError("The chunk should be a dictionary of a stream name into a list of sequences");
+
+            PyObject* key;
+            PyObject* value;
+            Py_ssize_t pos = 0;
+
+            std::vector<PyObject*> pyData;
+
+            // Remembering the py chunk for each stream.
+            pyData.resize(m_streamInfos.size(), nullptr);
+            while (PyDict_Next(m_pyChunk.get(), &pos, &key, &value))
+            {
+                if (!PyUnicode_Check(key))
+                    RuntimeError("Dictionary should contain stream names");
+
+                std::wstring name(PyUnicode_AS_UNICODE(key), PyUnicode_GET_SIZE(key));
+
+                auto it = std::find_if(m_streamInfos.begin(), m_streamInfos.end(),
+                    [name](const StreamInformation& s) { return s.m_name == name; });
+
+                if (it == m_streamInfos.end())
+                    RuntimeError("Stream with name '%ls' does not exist", name.c_str());
+
+                pyData[it - m_streamInfos.begin()] = value;
+            }
+
+            // Let's check that the size of the chunk across all streams
+            // is the same.
+            size_t size = GetFirstDimension(pyData.front());
+            for (size_t i = 1; i < m_streamInfos.size(); i++)
+            {
+                auto currentSize = GetFirstDimension(pyData[i]);
+                if (size != currentSize)
+                    RuntimeError("Please provide an equal number of sequences across all streams in the chunk"
+                        ", currently stream '%ls' has %d sequences, whereas '%ls'- %d",
+                        m_streamInfos.front().m_name.c_str(), (int)size,
+                        m_streamInfos[i].m_name.c_str(), (int)currentSize);
+            }
+
+            // Now fill in the data for all streams.
+            // The data for sequence I is at position I * <number of streams>.
+            m_data.resize(size * m_streamInfos.size());
+            for (size_t i = 0; i < m_streamInfos.size(); i++)
+                FillChunkData(i, pyData[i], size);
+        }
+
+        // Helper function that returns the first dimension of the object (list, numpy or csr_matrix).
+        size_t GetFirstDimension(PyObject* o)
         {
             if (PyList_Check(o))
                 return PyList_Size(o);
@@ -252,101 +297,136 @@ namespace CNTK
                 npy_intp* np_shape = PyArray_SHAPE(array);
                 return np_shape[0];
             }
+            // TODO: profile, probably need to have some form of
+            // vtable in here, same goes for other places where we use string comparisons.
             else if (o->ob_type->tp_name == std::string("csr_matrix"))
             {
-                auto shape = PyObject_GetAttrString(o, "shape");
+                volatile auto shape = GetProperty(o, "shape");
                 return static_cast<uint32_t>(PyLong_AsSize_t(PyTuple_GET_ITEM(shape, 0)));
             }
             else
-                RuntimeError("Unexpected type");
+                RuntimeError("Unexpected type %s, only list, numpy or csr_matrix are expected.", o->ob_type->tp_name);
+
             return 0;
         }
 
-        void FillDataFrom(size_t streamIndex, PyObject* o, size_t dataSize)
+        // For a given stream and from the Python data, the functions fills in m_data with
+        // sequences.
+        void FillChunkData(size_t streamIndex, PyObject* o, size_t dataSize)
         {
-            const auto& info = m_streamInfos[streamIndex];
-            auto storageFormat = info.m_storageFormat;
-            SequenceDataPtr sequence;
-            if (PyList_Check(o))
-            {
-                m_sampleMode = false;
-                for (size_t i = 0; i < dataSize; ++i)
-                {
-                    PyObject* item = PyList_GetItem(o, i);
-                    if (storageFormat == StorageFormat::Dense)
-                    {
-                        if(!PyArray_Check(item))
-                            RuntimeError("Expect dense data to be represented as numpy array.");
-                        sequence = FromNumPy(item, info);
-                    }
-                    else // Sparse
-                    {
-                        if (item->ob_type->tp_name != std::string("csr_matrix"))
-                            RuntimeError("Expect sparsa data to be represented as csr_matrix.");
-                        sequence = FromCSR(item, info);
-                    }
-                    m_data[i * m_streamInfos.size() + streamIndex] = sequence;
-                }
-            }
+            auto storageFormat = m_streamInfos[streamIndex].m_storageFormat;
+            if (PyList_Check(o)) // Data is a list of sequences.
+                FillDataWithSequences(streamIndex, o, dataSize);
+
+            // Data is a numpy array of dense samples.
             else if (storageFormat == StorageFormat::Dense && PyArray_Check(o))
-            {
-                PyArrayObject* array = (PyArrayObject*)o;
-                int rank = PyArray_NDIM(array);
-                npy_intp* np_shape = PyArray_SHAPE(array);
-                auto type = PyArray_TYPE(array);
-                if (type != NPY_FLOAT32)
-                    RuntimeError("Only float numbers are currently supported.");
+                FillDataWithDenseSamples(streamIndex, o, dataSize);
 
-                if(info.m_sampleLayout.Rank() == rank + 1)
-                    RuntimeError("Dense data supported only as single sample per row.");
-
-                size_t sampleSize = info.m_sampleLayout.TotalSize();
-                for (size_t i = 0; i < dataSize; ++i)
-                {
-                    auto d = (float*)PyArray_GETPTR1(array, i);
-                    sequence = std::make_shared<SwigDensePtrData>(d, m_pyChunk);
-                    sequence->m_numberOfSamples = 1;
-                    m_data[i * m_streamInfos.size() + streamIndex] = sequence;
-                }
-            }
-            else if (storageFormat == StorageFormat::SparseCSC && o->ob_type->tp_name == std::string("csr_matrix"))
-            {
-                auto pyData = (PyArrayObject*)PyObject_GetAttrString(o, "data");
-                auto type = PyArray_TYPE(pyData);
-                if (type != NPY_FLOAT32)
-                    RuntimeError("Only float numbers are currently supported.");
-
-                auto data = (float*)PyArray_DATA(pyData);
-                auto indices = (SparseIndexType*)PyArray_DATA((PyArrayObject*)PyObject_GetAttrString(o, "indices"));
-                auto indptr = (SparseIndexType*)PyArray_DATA((PyArrayObject*)PyObject_GetAttrString(o, "indptr"));
-
-                for (size_t i = 0; i < dataSize; ++i)
-                {
-                    sequence = std::make_shared<SwigSparsePtrData>(data + indptr[i], indices + indptr[i], indptr[i + 1] - indptr[i], m_pyChunk);
-                    sequence->m_numberOfSamples = 1;
-                    m_data[i * m_streamInfos.size() + streamIndex] = sequence;
-                }
-            }
+            // Data is a csr matrix of sparse samples.
+            else if (storageFormat == StorageFormat::SparseCSC &&
+                o->ob_type->tp_name == std::string("csr_matrix"))
+                FillDataWithSparseSamples(streamIndex, o, dataSize);
             else
                 RuntimeError("Unexpected data type '%s'. Please use numpy arrays, csr_matrix or list of those.", o->ob_type->tp_name);
         }
 
-        void GetSequencesInfo(std::vector<SequenceInfo>& descriptions)
+        // Fills chunk data with dense samples.
+        void FillDataWithDenseSamples(size_t streamIndex, PyObject* o, size_t dataSize)
         {
-            size_t numElements = m_data.size() / m_streamInfos.size();
-            descriptions.reserve(numElements);
+            const auto& info = m_streamInfos[streamIndex];
+            PyArrayObject* array = (PyArrayObject*)o;
+            int rank = PyArray_NDIM(array);
+            npy_intp* np_shape = PyArray_SHAPE(array);
+            auto type = PyArray_TYPE(array);
+            if (type != NPY_FLOAT32)
+                RuntimeError("Only float numbers are currently supported.");
+
+            if (info.m_sampleLayout.Rank() + 1 != rank)
+                RuntimeError("Dense data supported only as single sample per row.");
+
+            size_t sampleSize = info.m_sampleLayout.TotalSize();
+            for (size_t i = 0; i < dataSize; ++i)
+            {
+                auto d = (float*)PyArray_GETPTR1(array, i);
+                auto sequence = std::make_shared<DenseDataFromPy>(d, m_pyChunk);
+                sequence->m_numberOfSamples = 1;
+                m_data[i * m_streamInfos.size() + streamIndex] = sequence;
+            }
+        }
+
+        // Fills chunk data with sparse samples.
+        void FillDataWithSparseSamples(size_t streamIndex, PyObject* o, size_t dataSize)
+        {
+            const auto& info = m_streamInfos[streamIndex];
+            auto storageFormat = info.m_storageFormat;
+
+            auto pyData = (PyArrayObject*)GetProperty(o, "data");
+            auto type = PyArray_TYPE(pyData);
+            if (type != NPY_FLOAT32)
+                RuntimeError("Only float numbers are currently supported.");
+
+            auto data = (float*)PyArray_DATA(pyData);
+            auto indices = (SparseIndexType*)PyArray_DATA((PyArrayObject*)PyObject_GetAttrString(o, "indices"));
+            auto indptr = (SparseIndexType*)PyArray_DATA((PyArrayObject*)PyObject_GetAttrString(o, "indptr"));
+
+            for (size_t i = 0; i < dataSize; ++i)
+            {
+                auto sequence = std::make_shared<SparseDataFromPy>(data + indptr[i], indices + indptr[i], indptr[i + 1] - indptr[i], m_pyChunk);
+                sequence->m_nnzCounts.resize(1, indptr[i + 1] - indptr[i]);
+                sequence->m_numberOfSamples = 1;
+                m_data[i * m_streamInfos.size() + streamIndex] = sequence;
+            }
+        }
+
+        // Fills chunk data with sequences.
+        void FillDataWithSequences(size_t streamIndex, PyObject* o, size_t dataSize)
+        {
+            const auto& info = m_streamInfos[streamIndex];
+            auto storageFormat = info.m_storageFormat;
+            m_sampleMode = false;
+            for (size_t i = 0; i < dataSize; ++i)
+            {
+                PyObject* item = PyList_GetItem(o, i);
+                SequenceDataPtr sequence = nullptr;
+                if (storageFormat == StorageFormat::Dense)
+                {
+                    if (!PyArray_Check(item))
+                        RuntimeError("Expecting dense data to be represented as a numpy array.");
+                    sequence = FromNumPy((PyArrayObject*)item, info);
+                }
+                else // Sparse
+                {
+                    if (item->ob_type->tp_name != std::string("csr_matrix"))
+                        RuntimeError("Expecting sparse data to be represented as a csr_matrix.");
+                    sequence = FromCSR(item, info);
+                }
+
+                m_data[i * m_streamInfos.size() + streamIndex] = sequence;
+            }
+        }
+
+        // Gets sequence infos for the chunk.
+        void SequenceInfos(std::vector<SequenceInfo>& descriptions)
+        {
+            size_t numSequences = m_data.size() / m_streamInfos.size();
+            descriptions.reserve(numSequences);
+
             if (m_sampleMode)
             {
-                for (size_t i = 0; i < numElements; ++i)
-                    descriptions.push_back(SequenceInfo{i, 1, (ChunkIdType)m_chunkId});
+                for (size_t i = 0; i < numSequences; ++i)
+                    descriptions.push_back(SequenceInfo{ i, 1, (ChunkIdType)m_chunkId });
             }
             else
             {
+                // Performing max over sequences.
+                // TODO: Implement logic to specify mbsize based on a stream.
                 unsigned int sampleCount = 1;
                 for (size_t i = 0, j = 0; i < m_data.size(); ++i)
                 {
                     sampleCount = std::max(sampleCount, m_data[i]->m_numberOfSamples);
-                    if (i % m_streamInfos.size() == 0)
+
+                    // Last sequence across streams, remember the max sample count.
+                    if (i % m_streamInfos.size() == m_streamInfos.size() - 1)
                     {
                         descriptions.push_back(SequenceInfo{ j++, sampleCount, (ChunkIdType)m_chunkId });
                         sampleCount = 1;
@@ -355,28 +435,41 @@ namespace CNTK
             }
         }
 
+        // Get sequence data for a give sequence index across all streams.
         void GetSequence(size_t sequenceIndex, std::vector<SequenceDataPtr>& result) override
         {
             auto offset = m_data.data() + sequenceIndex * m_streamInfos.size();
             result.insert(result.end(), offset, offset + m_streamInfos.size());
         }
 
-        virtual void _GetSequence(size_t index, PyObject*) { NOT_IMPLEMENTED; }
+        // Get property of python object by name.
+        PyObject* GetProperty(PyObject* object, const std::string& propertyName)
+        {
+            // TODO: profile, probably need to have some form of
+            // vtable in here, same goes for other places where we use string comparisons.
+            auto result = PyObject_GetAttrString(object, propertyName.c_str());
+            if (!result)
+                RuntimeError("csr_matrix misses 's'.", propertyName.c_str());
+            return result;
+        }
 
         bool m_sampleMode = true;
+        std::shared_ptr<PyObject> m_pyChunk;
+        std::vector<size_t> m_indices;
+        std::vector<PyObject*> m_pyData;
+        std::vector<SequenceDataPtr> m_data;
+        size_t m_chunkId;
     };
-
-    typedef std::shared_ptr<SwigChunk> SwigChunkPtr;
 
     // Swig deserializer is used to expose user defined deserializers
     // to Python.
     class SwigDataDeserializer final : public DataDeserializer
     {
-        mutable std::vector<StreamInformation> m_streamInfos;
-        mutable std::once_flag m_streamInfosInitFlag;
+        std::vector<StreamInformation> m_streamInfos;
+        std::once_flag m_streamInfosInitFlag;
 
-        mutable std::vector<ChunkInfo> m_chunkInfos;
-        mutable std::once_flag m_chunkInfosInitFlag;
+        std::vector<ChunkInfo> m_chunkInfos;
+        std::once_flag m_chunkInfosInitFlag;
 
     public:
         SwigDataDeserializer() { }
@@ -386,13 +479,14 @@ namespace CNTK
         virtual void _GetChunkInfos(std::vector<ChunkInfo>&) { NOT_IMPLEMENTED; }
         virtual PyObject* _GetChunk(ChunkIdType chunkId) { NOT_IMPLEMENTED; }
 
-        // Simple 2Py redirectors.
+        // Simple python redirectors.
         std::vector<StreamInformation> StreamInfos() override
         {
             std::call_once(m_streamInfosInitFlag, [this]() {
                 GilStateGuard guard;
                 _GetStreamInfos(m_streamInfos);
             });
+
             return m_streamInfos;
         }
 
@@ -402,25 +496,14 @@ namespace CNTK
                 GilStateGuard guard;
                 _GetChunkInfos(m_chunkInfos);
             });
+
             return m_chunkInfos;
-        }
-
-        void SequenceInfosForChunk(ChunkIdType chunkId, std::vector<SequenceInfo>& descriptions) override
-        {
-            if (chunkId != m_lastChunkId)
-                LogicError("Unexpected chunk %d", chunkId);
-
-            m_lastChunk->GetSequencesInfo(descriptions);
-            m_lastChunk = nullptr;
-            m_lastChunkId = (size_t)0;
         }
 
         ChunkPtr GetChunk(ChunkIdType chunkId)
         {
-            m_lastChunkId = chunkId;
             GilStateGuard guard;
-            m_lastChunk = std::make_shared<SwigChunk>(chunkId, m_streamInfos, _GetChunk(chunkId));
-            return m_lastChunk;
+            return std::make_shared<SwigChunk>(chunkId, m_streamInfos, _GetChunk(chunkId));
         }
 
         bool GetSequenceInfo(const SequenceInfo& primary, SequenceInfo& description) override
@@ -428,7 +511,9 @@ namespace CNTK
             NOT_IMPLEMENTED;
         }
 
-        SwigChunkPtr m_lastChunk;
-        size_t m_lastChunkId;
+        void SequenceInfosForChunk(ChunkIdType chunkId, std::vector<SequenceInfo>& descriptions) override
+        {
+            NOT_IMPLEMENTED;
+        }
     };
 }

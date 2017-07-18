@@ -707,7 +707,6 @@ public:
     #define NPY_NO_DEPRECATED_API NPY_1_7_API_VERSION
     #include "numpy/ndarraytypes.h"
     #include "numpy/arrayobject.h"
-    #include "SwigPyUtils.h"
     #include "SwigDeserializer.h"
     using namespace CNTK;
 %}
@@ -1398,8 +1397,6 @@ std::unordered_map<CNTK::StreamInformation, std::pair<CNTK::NDArrayViewPtr, CNTK
 %vector_ref_conversion_directorargout(CNTK::StreamInformation,)
 %vector_ref_conversion_directorargin(CNTK::ChunkInfo,)
 %vector_ref_conversion_directorargout(CNTK::ChunkInfo,)
-%vector_ref_conversion_directorargin(CNTK::SequenceInfo,)
-%vector_ref_conversion_directorargout(CNTK::SequenceInfo,)
 
 %define %unordered_map_ref_conversion(DATA_TYPE1, _SWIG_TYPE1, DATA_TYPE2, _SWIG_TYPE2)
 
@@ -1463,10 +1460,6 @@ std::unordered_map<CNTK::StreamInformation, std::pair<CNTK::NDArrayViewPtr, CNTK
 %include "CNTKLibrary.h"
 
 %inline %{
-
-   // Forcing swig to generate wrappers.
-   inline const std::vector<CNTK::SequenceInfo>& FakeDeclaration() { throw std::logic_error("Used only for swig generation"); }
-
    // Trainer initializers.
    // Because SWIG cannot properly handle smart pointers to derived classes (causes memory leak during the check for distributed learners),
    // we need to redefine CreateTrainer.
@@ -1513,13 +1506,6 @@ std::unordered_map<CNTK::StreamInformation, std::pair<CNTK::NDArrayViewPtr, CNTK
 %include "SwigDeserializer.h"
 
 %inline %{
-
-#ifdef _WIN32
-#define CNTKPYTHON_API __declspec(dllexport)
-#else // no DLLs on Linux
-#define CNTKPYTHON_API
-#endif
-
 namespace CNTK
 {
     //
@@ -1662,35 +1648,51 @@ namespace CNTK
             return _GetCheckpointState();
         }
     };
+}
 
+namespace CNTK
+{
+    // Factory for Python user deserializers implemented by the Python side.
     class DeserializerFactory
     {
     public:
-        virtual DataDeserializerPtr operator()(const std::wstring&) const { return nullptr; }
-        virtual ~DeserializerFactory() {}
+        // Creates a deserializer for a given object id.
+        virtual DataDeserializerPtr operator()(const std::wstring& /*id*/) const
+        {
+            LogicError("Deserializer factory should be implemented by Python.");
+            return nullptr; 
+        }
+
+        virtual ~DeserializerFactory() = default;
     };
 
-    typedef std::shared_ptr<DeserializerFactory> DeserializerFactoryPtr;
+    static std::shared_ptr<DeserializerFactory> s_deserializerFactory;
 
-    static DeserializerFactoryPtr s_createDeserializerCallback;
-
-    void RegisterDeserializerFactory(DeserializerFactoryPtr callbackPtr)
+    void RegisterDeserializerFactory(std::shared_ptr<DeserializerFactory> factoryImpl)
     {
-        s_createDeserializerCallback = callbackPtr;
-    }
-
-    DeserializerFactoryPtr GetDeserializerFactory()
-    {
-        return s_createDeserializerCallback;
+        s_deserializerFactory = factoryImpl;
     }
 }
 
-// Python deserializers should get all configuration already on the python side.
-// Here we effectively retrieve earlier created by user deserializer.
-extern "C" __declspec(dllexport) bool CreateDeserializer(DataDeserializerPtr& deserializer, const std::wstring& id)
+#ifdef _WIN32
+#define CNTKPYTHON_API __declspec(dllexport)
+#else // no DLLs on Linux
+#define CNTKPYTHON_API
+#endif
+
+// From the reader perspective the Python deserializer is no different
+// from any other deserializer. It is implemented in _cntk_py.pyd module
+// that exposes CreateDeserializer function.
+// The only difference is that on the Python side CreateDeserializer
+// is not creating a new object, but returning a reference to a user created deserializer.
+// Python deserializers should get all configuration already on the Python side.
+// Here we effectively retrieve an earlier created user deserializer by its id.
+extern "C" CNTKPYTHON_API bool CreateDeserializer(DataDeserializerPtr& deserializer, const std::wstring& id)
 {
-    auto factory = CNTK::GetDeserializerFactory();
-    deserializer = (*factory)(id);
+    if(CNTK::s_deserializerFactory == nullptr)
+        RuntimeError("Deserializer factory has not been registered.");
+
+    deserializer = (*CNTK::s_deserializerFactory)(id);
     return true;
 }
 

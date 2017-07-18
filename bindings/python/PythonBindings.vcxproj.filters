@@ -366,9 +366,6 @@
     <ClInclude Include="cntk\cntk_py_wrap.h">
       <Filter>cntk</Filter>
     </ClInclude>
-    <ClInclude Include="cntk\SwigPyUtils.h">
-      <Filter>cntk</Filter>
-    </ClInclude>
     <ClInclude Include="cntk\SwigDeserializer.h">
       <Filter>cntk</Filter>
     </ClInclude>

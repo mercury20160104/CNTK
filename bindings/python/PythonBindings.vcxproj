@@ -156,7 +156,6 @@
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release_CpuOnly|x64'">true</ExcludedFromBuild>
     </ClInclude>
     <ClInclude Include="cntk\SwigDeserializer.h" />
-    <ClInclude Include="cntk\SwigPyUtils.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="cntk\cntk_py_wrap.cpp">

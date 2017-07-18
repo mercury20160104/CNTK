@@ -55,7 +55,7 @@ void LocalTimelineBlockRandomizer::Prefetch()
 
                 // Query deserializer.
                 ChunkPtr data = m_deserializer->GetChunk(desc.m_id);
-                m_deserializer->SequenceInfosForChunk(desc.m_id, m_prefetchedSequences);
+                data->SequenceInfos(m_prefetchedSequences);
                 m_prefetchedChunks.push_back(std::make_tuple(desc, data));
 
                 if (!m_sampleBasedRandomizationWindow)

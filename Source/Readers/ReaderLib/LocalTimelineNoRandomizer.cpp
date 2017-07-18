@@ -25,7 +25,7 @@ void LocalTimelineNoRandomizer::Prefetch()
         std::get<1>(m_prefetchedChunk) = m_deserializer->GetChunk(chunkId);
 
         std::get<2>(m_prefetchedChunk).clear();
-        m_deserializer->SequenceInfosForChunk(m_currentChunkPosition, std::get<2>(m_prefetchedChunk));
+        std::get<1>(m_prefetchedChunk)->SequenceInfos(std::get<2>(m_prefetchedChunk));
     });
 }
 

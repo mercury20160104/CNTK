@@ -1126,6 +1126,7 @@ class GenDeserializer(UserDeserializer):
         return result
 
 def test_user_deserializer_sample_mode():
+    import pdb; pdb.set_trace()
     import scipy.sparse as sp
     streams = [StreamInformation('x', 0, 'dense', np.float32, (2, 3)), 
                StreamInformation('y', 1, 'sparse', np.float32, (1, 3))]
@@ -1180,6 +1181,7 @@ def test_user_deserializer_sample_mode():
 
 
 def test_user_deserializer_sequence_mode():
+    import pdb;pdb.set_trace()
     import scipy.sparse as sp
     streams = [StreamInformation('x', 0, 'dense', np.float32, (2, 3)), 
                StreamInformation('y', 1, 'sparse', np.float32, (3,))]
