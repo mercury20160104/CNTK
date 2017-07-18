@@ -34,12 +34,12 @@ cfg = __C
 __C.CNTK = edict()
 
 __C.CNTK.FORCE_DETERMINISTIC = True
-__C.CNTK.FAST_MODE = False
+__C.CNTK.FAST_MODE = True
 __C.CNTK.MAKE_MODE = False
-__C.CNTK.TRAIN_E2E = False
+__C.CNTK.TRAIN_E2E = True
 __C.CNTK.DEBUG_OUTPUT = True
 __C.CNTK.USE_MEAN_GRADIENT = True
-__C.CNTK.TRAIN_CONV_LAYERS = True
+__C.CNTK.TRAIN_CONV_LAYERS = False
 
 __C.CNTK.DATASET = "Grocery" # "Grocery" or "Pascal"
 __C.CNTK.BASE_MODEL = "AlexNet" # "VGG16" or "AlexNet"

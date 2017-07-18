@@ -289,10 +289,8 @@ def create_detection_losses(cls_score, label_targets, rois, bbox_pred, bbox_targ
     p_bbox_targets = placeholder()
     p_bbox_inside_weights = placeholder()
     loss_bbox = SmoothL1Loss(cfg["CNTK"].SIGMA_DET_L1, p_bbox_pred, p_bbox_targets, p_bbox_inside_weights, 1.0)
-    # The terms that are accounted for in the bbox loss are those with bbox_inside_weight == 1
-    # Alternatively: bbox_num_terms = reduce_sum(C.greater_equal(bbox_inside_weights, 0.0))
-    bbox_num_terms = reduce_sum(p_bbox_inside_weights)  # / 4.0 --> bbiw is one for each coordinate --> moving 4.0 to next line
-    bbox_normalization_factor = 4.0 / bbox_num_terms
+    # The bbox loss is normalized by the batch size
+    bbox_normalization_factor = 1.0 / cfg["TRAIN"].BATCH_SIZE
     normalized_bbox_loss = reduce_sum(loss_bbox) * bbox_normalization_factor
 
     reduced_loss_bbox = cntk.as_block(normalized_bbox_loss,

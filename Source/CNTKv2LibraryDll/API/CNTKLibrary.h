@@ -3600,6 +3600,12 @@ namespace CNTK
     CNTK_API FunctionPtr Softmax(const Variable& operand, const std::wstring& name = L"");
 
     ///
+    /// Create an instance of the CNTK built-in softmax operation on specified axis on a
+    /// specified tensor input operand
+    ///
+    CNTK_API FunctionPtr Softmax(const Variable& operand, const Axis& axis, const std::wstring& name = L"");
+
+    ///
     /// Create an instance of the CNTK built-in hardmax operation on specified tensor input operand
     ///
     CNTK_API FunctionPtr Hardmax(const Variable& operand, const std::wstring& name = L"");

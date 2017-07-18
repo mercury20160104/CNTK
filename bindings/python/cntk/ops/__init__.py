@@ -1496,23 +1496,11 @@ def softmax(x, axis=None, name=''):
     '''
     from cntk.cntk_py import softmax
     x = sanitize_input(x)
-
-    last_axis = len(x.shape)-1
-    is_last_axis = (axis is None) or (axis == -1) or (axis == last_axis)
-
-    # For softmax on different axis, simply swap axis then call the standard softmax.
-    if is_last_axis:
-        return softmax(x, name)
-    else:
-        from cntk.cntk_py import transpose_axes
+    if axis is not None:
         axis = sanitize_axis(axis)
-        last_axis = sanitize_axis(last_axis)
-
-        xp = placeholder()
-        f = transpose_axes(xp, axis, last_axis)
-        f = softmax(f)
-        f = transpose_axes(f, last_axis, axis)
-        return as_block(f, [(xp, x)], 'softmax', name)
+        return softmax(x, axis, name)
+    else:
+        return softmax(x, name)
 
 @typemap
 def hardmax(x, name=''):

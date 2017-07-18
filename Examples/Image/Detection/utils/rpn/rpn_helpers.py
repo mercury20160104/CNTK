@@ -101,10 +101,8 @@ def create_rpn(conv_out, scaled_gt_boxes, im_info, add_loss_functions=True,
         p_rpn_bbox_targets = cntk.placeholder()
         p_rpn_bbox_inside_weights = cntk.placeholder()
         rpn_loss_bbox = SmoothL1Loss(cfg["CNTK"].SIGMA_RPN_L1, p_rpn_bbox_pred, p_rpn_bbox_targets, p_rpn_bbox_inside_weights, 1.0)
-        # The terms that are accounted for in the bbox loss are those with bbox_inside_weight == 1
-        # Alternatively: bbox_num_terms = reduce_sum(cntk.greater_equal(rpn_bbox_inside_weights, 0.0))
-        bbox_num_terms = reduce_sum(p_rpn_bbox_inside_weights) # / 4.0 --> bbiw is one for each coordinate --> moving 4.0 to next line
-        bbox_normalization_factor = 4.0 / bbox_num_terms
+        # The bbox loss is normalized by the rpn batch size
+        bbox_normalization_factor = 1.0 / cfg["TRAIN"].RPN_BATCHSIZE
         normalized_rpn_bbox_loss = reduce_sum(rpn_loss_bbox) * bbox_normalization_factor
 
         reduced_rpn_loss_bbox = cntk.as_block(normalized_rpn_bbox_loss,
