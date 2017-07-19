@@ -163,6 +163,7 @@ class MinibatchSource(cntk_py.MinibatchSource):
 
     @staticmethod
     def _create_deserializer(id):
+        # Return previosly registred object to C++ side.
         deserializer = MinibatchSource._runtime_deserializer_table[id]
         del MinibatchSource._runtime_deserializer_table[id]
         return deserializer
@@ -176,7 +177,8 @@ class MinibatchSource(cntk_py.MinibatchSource):
             MinibatchSource._deserializer_factory = _DeserializerFactory(MinibatchSource._create_deserializer)
             cntk_py._register_deserializer_factory(MinibatchSource._deserializer_factory)
 
-        # Remember deserializer with a unique generated id.
+        # Remember deserializer with a unique generated id
+        # to return it later when _create_deserializer is called from C++ side.
         id = str(uuid.uuid4())
         MinibatchSource._runtime_deserializer_table[id] = deserializer
         # Currently UserDeserializer in python does not support composability

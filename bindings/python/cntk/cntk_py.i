@@ -1652,7 +1652,7 @@ namespace CNTK
 
 namespace CNTK
 {
-    // Factory for Python user deserializers implemented by the Python side.
+    // Factory for Python user deserializers.
     class DeserializerFactory
     {
     public:
@@ -1684,9 +1684,13 @@ namespace CNTK
 // from any other deserializer. It is implemented in _cntk_py.pyd module
 // that exposes CreateDeserializer function.
 // The only difference is that on the Python side CreateDeserializer
-// is not creating a new object, but returning a reference to a user created deserializer.
-// Python deserializers should get all configuration already on the Python side.
-// Here we effectively retrieve an earlier created user deserializer by its id.
+// is not creating a new object, but returning a reference to already created object.
+// Python deserializers get all configuration already on the Python side, i.e.
+//    deserializer = CSVDeserializer(blabla)
+//    mbsource = MinibatchSource([deserializer]);  <-- we register Python deserializer object inside this call
+//                                                     end when CreateDeserializer is called from C++ side
+//                                                     we return a reference to it.
+// CreateDeserializer retrieves an earlier created user deserializer by its id.
 extern "C" CNTKPYTHON_API bool CreateDeserializer(DataDeserializerPtr& deserializer, const std::wstring& id)
 {
     if(CNTK::s_deserializerFactory == nullptr)
