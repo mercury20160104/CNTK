@@ -9,14 +9,7 @@ import os
 import sys
 
 os.environ["SDL_VIDEODRIVER"] = "dummy" 
-
-def set_keras_backend(backend):
-    from keras import backend as K
-    if K.backend() != backend:
-        os.environ['KERAS_BACKEND'] = backend
-        reload(K)
-        assert K.backend() == backend
-
+os.environ['KERAS_BACKEND'] = 'cntk'
 
 from cntk.device import try_set_default_device, gpu
 
@@ -39,8 +32,6 @@ def test_FlappingBird_with_keras_DQN_noerror(device_id):
     from cntk.ops.tests.ops_test_utils import cntk_device
     try_set_default_device(cntk_device(device_id))
     
-    set_keras_backend("cntk")
-    
     sys.path.append(example_dir)
     current_dir = os.getcwd()
     os.chdir(example_dir)
@@ -60,7 +51,3 @@ def test_FlappingBird_with_keras_DQN_noerror(device_id):
     
     os.chdir(current_dir)
     print("Done")
-
-
-
-
