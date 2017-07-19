@@ -33,12 +33,20 @@ namespace CNTK
 
     typedef std::shared_ptr<PyObject> PyObjectPtr;
 
+    // Wraps a python object pointer into a shared pointer
+    // with thread safe destructor.
+    inline PyObjectPtr MakeShared(PyObject* object)
+    {
+        Py_XINCREF(object);
+        return  PyObjectPtr(object, [](PyObject* p) { GilStateGuard guard; Py_XDECREF(p); });
+    }
+
     // Dense sequence that references some memory from a Python object.
     // Makes sure the Python object is not released while the sequence exists.
     struct DenseDataFromPy final : public DenseSequenceData
     {
-        DenseDataFromPy(void* ptr, const PyObjectPtr& object)
-            : m_data(ptr), m_object(object)
+        DenseDataFromPy(void* ptr, unsigned int numberOfSamples, const PyObjectPtr& object)
+            : m_data(ptr), m_object(object), DenseSequenceData(numberOfSamples)
         {
         }
 
@@ -57,8 +65,8 @@ namespace CNTK
     // Makes sure the Python object is not released while the sequence exists.
     struct SparseDataFromPy final : public SparseSequenceData
     {
-        SparseDataFromPy(void* data, SparseIndexType* indices, SparseIndexType nonZeroCount, const PyObjectPtr& object)
-            : m_data(data), m_object(object)
+        SparseDataFromPy(void* data, SparseIndexType* indices, SparseIndexType nonZeroCount, unsigned int numberOfSamples, const PyObjectPtr& object)
+            : m_data(data), m_object(object), SparseSequenceData(numberOfSamples)
         {
             m_indices = indices;
             m_totalNnzCount = nonZeroCount;
@@ -82,72 +90,6 @@ namespace CNTK
     {
         std::vector<StreamInformation> m_streamInfos;
 
-        struct SwigSparseData final : public SparseSequenceData
-        {
-            SwigSparseData(PyObject* object, PyArrayObject* data, PyArrayObject* indices, PyArrayObject* indptr)
-                : m_object(object), m_pyData(data), m_pyIndptr(indptr), m_pyIndices(indices)
-            {
-                Py_INCREF(m_object);
-                Py_INCREF(m_pyData);
-                Py_INCREF(m_pyIndptr);
-                Py_INCREF(m_pyIndices);
-
-                m_indices = (SparseIndexType*)PyArray_DATA(m_pyIndices);
-                m_totalNnzCount = static_cast<SparseIndexType>(PyArray_SIZE(m_pyData));
-                auto nnzCountsSize = PyArray_SIZE(m_pyIndptr);
-                m_nnzCounts.resize(nnzCountsSize);
-                auto type = PyArray_TYPE(m_pyIndptr);
-                auto indPtr = PyArray_DATA(m_pyIndptr);
-
-                size_t elementSize = 0;
-                switch (type)
-                {
-                case NPY_LONG:
-                    elementSize = NPY_SIZEOF_LONG;
-                    break;
-                case NPY_INT:
-                    elementSize = NPY_SIZEOF_INT;
-                    break;
-                default:
-                    RuntimeError("Unsupported index type '%d'", type);
-                }
-
-                if (elementSize != sizeof(SparseIndexType))
-                    RuntimeError("Number of bits for index is unsupported for type '%d'", type);
-
-                memcpy(&m_nnzCounts[0], indPtr, nnzCountsSize * elementSize);
-                for (size_t i = 0; i < m_nnzCounts.size() - 1; ++i)
-                    m_nnzCounts[i] = m_nnzCounts[i + 1] - m_nnzCounts[i];
-                m_nnzCounts.resize(m_nnzCounts.size() - 1);
-            }
-
-            virtual ~SwigSparseData()
-            {
-                GilStateGuard guard;
-                Py_DECREF(m_object);
-                Py_DECREF(m_pyData);
-                Py_DECREF(m_pyIndptr);
-                Py_DECREF(m_pyIndices);
-            };
-
-            virtual const void* GetDataBuffer()
-            {
-                GilStateGuard guard;
-                return PyArray_DATA(m_pyData);
-            }
-
-            virtual const NDShape& GetSampleShape()
-            {
-                RuntimeError("Sample shape should be specified on the stream.");
-            }
-
-        private:
-            PyObject* m_object;
-            PyArrayObject* m_pyData;
-            PyArrayObject* m_pyIndptr;
-            PyArrayObject* m_pyIndices;
-        };
-
         // A helper function that from a Python array creates a dense sequence data.
         SequenceDataPtr FromNumPy(PyArrayObject* array, const StreamInformation& info)
         {
@@ -161,12 +103,7 @@ namespace CNTK
             if (type != NPY_FLOAT32)
                 RuntimeError("Only array of float is currently supported.");
 
-            Py_XINCREF(array);
-            auto obj = PyObjectPtr((PyObject*)array, [](PyObject* p) { GilStateGuard guard; Py_XDECREF(p); });
-
-            SequenceDataPtr result = std::make_shared<DenseDataFromPy>(PyArray_DATA(array), obj);
-            result->m_numberOfSamples = numSamples;
-            return result;
+            return std::make_shared<DenseDataFromPy>(PyArray_DATA(array), numSamples, MakeShared((PyObject*)array));
         }
 
         SequenceDataPtr FromCSR(PyObject* object, const StreamInformation& info)
@@ -183,23 +120,15 @@ namespace CNTK
             auto shape = GetProperty(object, "shape");
             auto numElements = PyTuple_GET_ITEM(shape, 0);
 
-            Py_INCREF(object);
-            auto obj = std::shared_ptr<PyObject>(object, [](PyObject* p)
-            {
-                GilStateGuard guard;
-                Py_XDECREF(p);
-            });
-
             auto result = std::make_shared<SparseDataFromPy>(
                 PyArray_DATA(data),
                 (SparseIndexType*)PyArray_DATA(indices),
                 static_cast<SparseIndexType>(PyArray_SIZE(data)),
-                obj);
+                static_cast<uint32_t>(PyLong_AsSize_t(numElements)),
+                MakeShared(object));
 
-            auto nnzCountsSize = PyArray_SIZE(indptr);
-            result->m_nnzCounts.resize(nnzCountsSize);
+            // Checking the type
             type = PyArray_TYPE(indptr);
-
             size_t elementSize = 0;
             switch (type)
             {
@@ -216,12 +145,13 @@ namespace CNTK
             if (elementSize != sizeof(SparseIndexType))
                 RuntimeError("Number of bits for index is unsupported for type '%d'", type);
 
+            // Filling in nnzCount
+            auto nnzCountsSize = PyArray_SIZE(indptr);
+            result->m_nnzCounts.resize(nnzCountsSize);
             memcpy(&result->m_nnzCounts[0], PyArray_DATA(indptr), nnzCountsSize * elementSize);
             for (size_t i = 0; i < result->m_nnzCounts.size() - 1; ++i)
                 result->m_nnzCounts[i] = result->m_nnzCounts[i + 1] - result->m_nnzCounts[i];
-
             result->m_nnzCounts.resize(result->m_nnzCounts.size() - 1);
-            result->m_numberOfSamples = static_cast<uint32_t>(PyLong_AsSize_t(numElements));
             return result;
         }
 
@@ -229,14 +159,7 @@ namespace CNTK
         SwigChunk(size_t chunkId, const std::vector<StreamInformation>& streamInfos, PyObject* chunk)
             : m_streamInfos(streamInfos), m_chunkId(chunkId)
         {
-            // Increment so that is is not released by Python.
-            Py_XINCREF(chunk);
-            m_pyChunk = std::shared_ptr<PyObject>(chunk, [](PyObject* p)
-            {
-                // During deletion, we have to acquire GIL, this will happen on a prefetch thread.
-                GilStateGuard guard;
-                Py_XDECREF(p);
-            });
+            m_pyChunk = MakeShared(chunk);
 
             // Chunks are dictionaries "stream name" -> <numpy|csr_matrix|list of sequences>.
             if (!PyDict_Check(m_pyChunk.get()))
@@ -301,7 +224,7 @@ namespace CNTK
             // vtable in here, same goes for other places where we use string comparisons.
             else if (o->ob_type->tp_name == std::string("csr_matrix"))
             {
-                volatile auto shape = GetProperty(o, "shape");
+                auto shape = GetProperty(o, "shape");
                 return static_cast<uint32_t>(PyLong_AsSize_t(PyTuple_GET_ITEM(shape, 0)));
             }
             else
@@ -348,8 +271,7 @@ namespace CNTK
             for (size_t i = 0; i < dataSize; ++i)
             {
                 auto d = (float*)PyArray_GETPTR1(array, i);
-                auto sequence = std::make_shared<DenseDataFromPy>(d, m_pyChunk);
-                sequence->m_numberOfSamples = 1;
+                auto sequence = std::make_shared<DenseDataFromPy>(d, 1, m_pyChunk);
                 m_data[i * m_streamInfos.size() + streamIndex] = sequence;
             }
         }
@@ -371,9 +293,14 @@ namespace CNTK
 
             for (size_t i = 0; i < dataSize; ++i)
             {
-                auto sequence = std::make_shared<SparseDataFromPy>(data + indptr[i], indices + indptr[i], indptr[i + 1] - indptr[i], m_pyChunk);
+                auto sequence = std::make_shared<SparseDataFromPy>(
+                    data + indptr[i],
+                    indices + indptr[i],
+                    indptr[i + 1] - indptr[i],
+                    1,
+                    m_pyChunk);
+
                 sequence->m_nnzCounts.resize(1, indptr[i + 1] - indptr[i]);
-                sequence->m_numberOfSamples = 1;
                 m_data[i * m_streamInfos.size() + streamIndex] = sequence;
             }
         }
@@ -453,12 +380,11 @@ namespace CNTK
             return result;
         }
 
-        bool m_sampleMode = true;
-        std::shared_ptr<PyObject> m_pyChunk;
-        std::vector<size_t> m_indices;
-        std::vector<PyObject*> m_pyData;
-        std::vector<SequenceDataPtr> m_data;
-        size_t m_chunkId;
+    private:
+        size_t m_chunkId;                       // Chunk id
+        bool m_sampleMode = true;               // True, if the data is in sample form.
+        std::shared_ptr<PyObject> m_pyChunk;    // Python chunk data.
+        std::vector<SequenceDataPtr> m_data;    // Sequence data for each sequence in chunk.
     };
 
     // Swig deserializer is used to expose user defined deserializers
